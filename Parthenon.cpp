@@ -332,6 +332,19 @@ void ShapesApp::Draw(const GameTimer& gt)
 
 	ImGui::ShowDemoWindow();
 
+	if (ImGui::Begin("Lights"))
+	{
+		for (int i = 0; i < 16; i++)
+		{
+			ImGui::SliderFloat3(("Light " + std::to_string(i) + " Strength").c_str(), &mMainPassCB.Lights[i].Strength.x, 0.0f, 10.0f);
+			ImGui::SliderFloat3(("Light " + std::to_string(i) + " Position").c_str(), &mMainPassCB.Lights[i].Position.x, -20.0f, 20.0f);
+			ImGui::SliderFloat3(("Light " + std::to_string(i) + " Direction").c_str(), &mMainPassCB.Lights[i].Direction.x, -1.0f, 1.0f);
+			ImGui::SliderFloat(("Light " + std::to_string(i) + " Falloff Start").c_str(), &mMainPassCB.Lights[i].FalloffStart, 0.0f, 10.0f);
+			ImGui::SliderFloat(("Light " + std::to_string(i) + " Falloff End").c_str(), &mMainPassCB.Lights[i].FalloffEnd, 0.0f, 10.0f);
+		}
+	}
+	ImGui::End();
+
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 
@@ -409,6 +422,9 @@ void ShapesApp::OnMouseUp(WPARAM btnState, int x, int y)
 
 void ShapesApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
+	if (!(GetAsyncKeyState('X') & 0x8000))
+		return;
+
 	if ((btnState & MK_LBUTTON) != 0)
 	{
 		// Make each pixel correspond to a quarter of a degree.
@@ -441,6 +457,9 @@ void ShapesApp::OnMouseMove(WPARAM btnState, int x, int y)
 
 void ShapesApp::OnKeyboardInput(const GameTimer& gt)
 {
+	if (!(GetAsyncKeyState('X') & 0x8000))
+		return;
+
 	if (GetAsyncKeyState('1') & 0x8000)
 		mIsWireframe = true;
 	else
@@ -556,8 +575,10 @@ void ShapesApp::UpdateMainPassCB(const GameTimer& gt)
 	mMainPassCB.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
 
 	//Add a pointlight
-	mMainPassCB.Lights[3].Position = { 0.0f, 4.0f, 0.0f };
-	mMainPassCB.Lights[3].Strength = { 1.0f, 1.0f, 0.0f };
+	mMainPassCB.Lights[3].Position = { 0.0f, 10.0f, 10.0f };
+	mMainPassCB.Lights[3].Strength = { 4.0f, 1.0f, 1.0f };
+	mMainPassCB.Lights[3].FalloffStart = 5.0f;
+	mMainPassCB.Lights[3].FalloffEnd = 15.0f;
 
 	mMainPassCB.Lights[4].Position = { 0.0f, 4.0f, -6.0f };
 	mMainPassCB.Lights[4].Strength = { 1.0f, 0.0f, 1.0f };

@@ -8,11 +8,11 @@
 #endif
 
 #ifndef NUM_POINT_LIGHTS
-    #define NUM_POINT_LIGHTS 0
+    #define NUM_POINT_LIGHTS 4
 #endif
 
 #ifndef NUM_SPOT_LIGHTS
-    #define NUM_SPOT_LIGHTS 0
+    #define NUM_SPOT_LIGHTS 1
 #endif
 
 // Include structures and functions for lighting.
@@ -76,7 +76,7 @@ cbuffer cbMaterial : register(b2)
     float    gRoughness;
 	float4x4 gMatTransform;
 };
- 
+
 struct VertexIn
 {
 	float3 PosW  : POSITION;
@@ -108,7 +108,7 @@ VertexOut VS(VertexIn vin)
 
 	return vout;
 }
- 
+
 //step4
  // We expand each point into a quad (4 vertices), so the maximum number of vertices
  // we output per geometry shader invocation is 4.
@@ -116,7 +116,7 @@ VertexOut VS(VertexIn vin)
 void GS(point VertexOut gin[1], //PrimitiveType InputVertexType InputName[NumElements]-> one vertex for a point, two for aline, threefor atriangle, four for line with adjacency, and six for a triangle with adjacency.
         uint primID : SV_PrimitiveID, //inout StreamOutputObject<OutputVertexType>
         inout TriangleStream<GeoOut> triStream)  //OutputName
-{	
+{
 	//
 	// Compute the local coordinate system of the sprite relative to the world
 	// space such that the billboard is aligned with the y-axis and faces the eye.
@@ -133,7 +133,7 @@ void GS(point VertexOut gin[1], //PrimitiveType InputVertexType InputName[NumEle
 	//
 	float halfWidth  = 0.5f*gin[0].SizeW.x;
 	float halfHeight = 0.5f*gin[0].SizeW.y;
-	
+
 	float4 v[4];
 	v[0] = float4(gin[0].CenterW + halfWidth*right - halfHeight*up, 1.0f);
 	v[1] = float4(gin[0].CenterW + halfWidth*right + halfHeight*up, 1.0f);
@@ -141,18 +141,18 @@ void GS(point VertexOut gin[1], //PrimitiveType InputVertexType InputName[NumEle
 	v[3] = float4(gin[0].CenterW - halfWidth*right + halfHeight*up, 1.0f);
 
 	//
-	// Transform quad vertices to world space and output 
+	// Transform quad vertices to world space and output
 	// them as a triangle strip.
 	//
-	
-	float2 texC[4] = 
+
+	float2 texC[4] =
 	{
 		float2(0.0f, 1.0f),
 		float2(0.0f, 0.0f),
 		float2(1.0f, 1.0f),
 		float2(1.0f, 0.0f)
 	};
-	
+
 	GeoOut gout;
 	[unroll]
 	for(int i = 0; i < 4; ++i)
@@ -162,7 +162,7 @@ void GS(point VertexOut gin[1], //PrimitiveType InputVertexType InputName[NumEle
 		gout.NormalW  = look;
 		gout.TexC     = texC[i];
 		gout.PrimID   = primID;
-		
+
 		triStream.Append(gout);
 	}
 }
@@ -176,9 +176,9 @@ float4 PS(GeoOut pin) : SV_Target
     //using dynamic indexing
     //float4 diffuseAlbedo = gTreeMapArray[pin.PrimID % 3].Sample(gsamAnisotropicWrap, pin.TexC) * gDiffuseAlbedo;
 
-	
+
 #ifdef ALPHA_TEST
-	// Discard pixel if texture alpha < 0.1.  We do this test as soon 
+	// Discard pixel if texture alpha < 0.1.  We do this test as soon
 	// as possible in the shader so that we can potentially exit the
 	// shader early, thereby skipping the rest of the shader code.
 	clip(diffuseAlbedo.a - 0.1f);
@@ -187,7 +187,7 @@ float4 PS(GeoOut pin) : SV_Target
     // Interpolating normal can unnormalize it, so renormalize it.
     pin.NormalW = normalize(pin.NormalW);
 
-    // Vector from point being lit to eye. 
+    // Vector from point being lit to eye.
 	float3 toEyeW = gEyePosW - pin.PosW;
 	float distToEye = length(toEyeW);
 	toEyeW /= distToEye; // normalize
@@ -213,5 +213,3 @@ float4 PS(GeoOut pin) : SV_Target
 
     return litColor;
 }
-
-
