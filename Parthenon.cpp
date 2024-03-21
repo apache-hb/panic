@@ -5,6 +5,8 @@
 #include "Common/GeometryGenerator.h"
 #include "FrameResource.h"
 
+#include "Waves.h"
+
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx12.h"
@@ -89,14 +91,16 @@ private:
 	void UpdateObjectCBs(const GameTimer& gt);
 	void UpdateMaterialCBs(const GameTimer& gt);
 	void UpdateMainPassCB(const GameTimer& gt);
+	void UpdateWaves(const GameTimer& gt);
 
 	void LoadTextures();
 	void BuildRootSignature();
 	void BuildDescriptorHeaps();
 
 	void BuildShadersAndInputLayout();
+	void BuildWavesGeometryBuffers();
 	void BuildShapeGeometry();
-	void BuildSkullGeometry();
+
 	//step1
 	void BuildTreeSpritesGeometry();
 	float GetHillsHeight(float x, float z)const;
@@ -110,7 +114,7 @@ private:
 	//step2-2
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
-
+	RenderItem* mWavesRitem = nullptr;
 private:
 
 	std::vector<std::unique_ptr<FrameResource>> mFrameResources;
@@ -138,7 +142,8 @@ private:
 	// List of all the render items.
 	std::vector<std::unique_ptr<RenderItem>> mAllRitems;
 
-	//step 16
+	std::unique_ptr<Waves> mWaves;
+
 	// Render items divided by PSO.
 	std::vector<RenderItem*> mRitemLayer[(int)RenderLayer::Count];
 
@@ -224,6 +229,8 @@ bool ShapesApp::Initialize()
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;       // Enable Keyboard Controls
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 	ImGui::StyleColorsDark();
 
 	// Reset the command list to prep for initialization commands.
@@ -232,6 +239,7 @@ bool ShapesApp::Initialize()
 	// Get the increment size of a descriptor in this heap type.  This is hardware specific,
    // so we have to query this information.
 	mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	mWaves = std::make_unique<Waves>(128, 128, 1.0f, 0.03f, 4.0f, 0.2f);
 
 	LoadTextures();
 	BuildRootSignature();
@@ -239,7 +247,7 @@ bool ShapesApp::Initialize()
 
 	BuildShadersAndInputLayout();
 	BuildShapeGeometry();
-	BuildSkullGeometry();
+	BuildWavesGeometryBuffers();
 
 	//step2
 	BuildTreeSpritesGeometry();
@@ -292,6 +300,7 @@ void ShapesApp::Update(const GameTimer& gt)
 	UpdateObjectCBs(gt);
 	UpdateMaterialCBs(gt);
 	UpdateMainPassCB(gt);
+	UpdateWaves(gt);
 }
 
 void ShapesApp::Draw(const GameTimer& gt)
@@ -319,27 +328,28 @@ void ShapesApp::Draw(const GameTimer& gt)
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 
-
 	ImGui::ShowDemoWindow();
 
 	mCommandList->RSSetViewports(1, &mScreenViewport);
 	mCommandList->RSSetScissorRects(1, &mScissorRect);
 
 	// Indicate a state transition on the resource usage.
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+	auto t0 = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+	mCommandList->ResourceBarrier(1, &t0);
 
 	// Clear the back buffer and depth buffer.
 	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
 	mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
 	// Specify the buffers we are going to render to.
-	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+	auto rtvHandle = CurrentBackBufferView();
+	auto dsvHandle = DepthStencilView();
+	mCommandList->OMSetRenderTargets(1, &rtvHandle, true, &dsvHandle);
 
 	//step5
 	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
 	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
-
 
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
@@ -354,12 +364,13 @@ void ShapesApp::Draw(const GameTimer& gt)
 	mCommandList->SetPipelineState(mPSOs["treeSprites"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTestedTreeSprites]);
 
-	// Indicate a state transition on the resource usage.
-	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
-
 	ImGui::Render();
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), mCommandList.Get());
+
+	// Indicate a state transition on the resource usage.
+	auto t1 = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+	mCommandList->ResourceBarrier(1, &t1);
 
 	// Done recording commands.
 	ThrowIfFailed(mCommandList->Close());
@@ -513,9 +524,12 @@ void ShapesApp::UpdateMainPassCB(const GameTimer& gt)
 	XMMATRIX proj = XMLoadFloat4x4(&mProj);
 
 	XMMATRIX viewProj = XMMatrixMultiply(view, proj);
-	XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
-	XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
-	XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
+	auto d0 = XMMatrixDeterminant(view);
+	auto d1 = XMMatrixDeterminant(proj);
+	auto d2 = XMMatrixDeterminant(viewProj);
+	XMMATRIX invView = XMMatrixInverse(&d0, view);
+	XMMATRIX invProj = XMMatrixInverse(&d1, proj);
+	XMMATRIX invViewProj = XMMatrixInverse(&d2, viewProj);
 
 	XMStoreFloat4x4(&mMainPassCB.View, XMMatrixTranspose(view));
 	XMStoreFloat4x4(&mMainPassCB.InvView, XMMatrixTranspose(invView));
@@ -591,6 +605,13 @@ void ShapesApp::LoadTextures()
 		mCommandList.Get(), treeArrayTex->Filename.c_str(),
 		treeArrayTex->Resource, treeArrayTex->UploadHeap));
 
+	auto waterTex = std::make_unique<Texture>();
+	waterTex->Name = "waterTex";
+	waterTex->Filename = L"water1.dds";
+	ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),
+		mCommandList.Get(), waterTex->Filename.c_str(),
+		waterTex->Resource, waterTex->UploadHeap));
+
 	mTextures[treeArrayTex->Name] = std::move(treeArrayTex);
 
 	mTextures[skullTex->Name] = std::move(skullTex);
@@ -598,6 +619,7 @@ void ShapesApp::LoadTextures()
 	mTextures[bricksTex->Name] = std::move(bricksTex);
 	mTextures[stoneTex->Name] = std::move(stoneTex);
 	mTextures[tileTex->Name] = std::move(tileTex);
+	mTextures[waterTex->Name] = std::move(waterTex);
 }
 
 
@@ -681,6 +703,8 @@ void ShapesApp::BuildDescriptorHeaps()
 	auto stoneTex = mTextures["stoneTex"]->Resource;
 	auto tileTex = mTextures["tileTex"]->Resource;
 	auto skullTex = mTextures["skullTex"]->Resource;
+
+	auto waterTex = mTextures["waterTex"]->Resource;
 	//step11
 	auto treeArrayTex = mTextures["treeArrayTex"]->Resource;
 
@@ -728,15 +752,25 @@ void ShapesApp::BuildDescriptorHeaps()
 	srvDesc.Texture2DArray.ArraySize = treeArrayTex->GetDesc().DepthOrArraySize;
 	md3dDevice->CreateShaderResourceView(treeArrayTex.Get(), &srvDesc, hDescriptor);
 
-	UINT offset = mCbvSrvDescriptorSize * 5;
+	// next descriptor
+	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = -1;
+	srvDesc.Format = waterTex->GetDesc().Format;
+	md3dDevice->CreateShaderResourceView(waterTex.Get(), &srvDesc, hDescriptor);
+
+	UINT offset = mCbvSrvDescriptorSize * 6;
 
 	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
 
+	ImGui_ImplWin32_Init(mhMainWnd);
 	ImGui_ImplDX12_Init(md3dDevice.Get(), 3,
 		DXGI_FORMAT_R8G8B8A8_UNORM, mSrvDescriptorHeap.Get(),
-		hDescriptor,
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), offset, mCbvSrvDescriptorSize),
 		CD3DX12_GPU_DESCRIPTOR_HANDLE(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), offset, mCbvSrvDescriptorSize));
-	ImGui_ImplWin32_Init(mhMainWnd);
 }
 
 void ShapesApp::BuildShadersAndInputLayout()
@@ -964,89 +998,50 @@ void ShapesApp::BuildShapeGeometry()
 	mGeometries[geo->Name] = std::move(geo);
 }
 
-void ShapesApp::BuildSkullGeometry()
+void ShapesApp::BuildWavesGeometryBuffers()
 {
-	std::ifstream fin(gProgramPath / "skull.txt");
+	std::vector<std::uint16_t> indices(3 * mWaves->TriangleCount()); // 3 indices per face
+	assert(mWaves->VertexCount() < 0x0000ffff);
 
-	if (!fin)
+	// Iterate over each quad.
+	int m = mWaves->RowCount();
+	int n = mWaves->ColumnCount();
+	int k = 0;
+	for(int i = 0; i < m - 1; ++i)
 	{
-		MessageBox(0, L"Models/skull.txt not found.", 0, 0);
-		return;
+		for(int j = 0; j < n - 1; ++j)
+		{
+			indices[k] = i*n + j;
+			indices[k + 1] = i*n + j + 1;
+			indices[k + 2] = (i + 1)*n + j;
+
+			indices[k + 3] = (i + 1)*n + j;
+			indices[k + 4] = i*n + j + 1;
+			indices[k + 5] = (i + 1)*n + j + 1;
+
+			k += 6; // next quad
+		}
 	}
 
-	UINT vcount = 0;
-	UINT tcount = 0;
-	std::string ignore;
-
-	fin >> ignore >> vcount;
-	fin >> ignore >> tcount;
-	fin >> ignore >> ignore >> ignore >> ignore;
-
-	std::vector<Vertex> vertices(vcount);
-	for (UINT i = 0; i < vcount; ++i)
-	{
-		fin >> vertices[i].Pos.x >> vertices[i].Pos.y >> vertices[i].Pos.z;
-		fin >> vertices[i].Normal.x >> vertices[i].Normal.y >> vertices[i].Normal.z;
-
-		//step15: find uv mapping for skull model
-		XMVECTOR P = XMLoadFloat3(&vertices[i].Pos);
-
-		// Project point onto unit sphere and generate spherical texture coordinates.
-		XMFLOAT3 spherePos;
-		XMStoreFloat3(&spherePos, XMVector3Normalize(P));
-
-		float theta = atan2f(spherePos.z, spherePos.x);
-
-		// Put in [0, 2pi].
-		if (theta < 0.0f)
-			theta += XM_2PI;
-
-		float phi = acosf(spherePos.y);
-
-		float u = theta / (2.0f * XM_PI);
-		float v = phi / XM_PI;
-
-		vertices[i].TexC = { u, v };
-	}
-
-	fin >> ignore;
-	fin >> ignore;
-	fin >> ignore;
-
-	std::vector<std::int32_t> indices(3 * tcount);
-	for (UINT i = 0; i < tcount; ++i)
-	{
-		fin >> indices[i * 3 + 0] >> indices[i * 3 + 1] >> indices[i * 3 + 2];
-	}
-
-	fin.close();
-
-	//
-	// Pack the indices of all the meshes into one index buffer.
-	//
-
-	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
-
-	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::int32_t);
+	UINT vbByteSize = mWaves->VertexCount()*sizeof(Vertex);
+	UINT ibByteSize = (UINT)indices.size()*sizeof(std::uint16_t);
 
 	auto geo = std::make_unique<MeshGeometry>();
-	geo->Name = "skullGeo";
+	geo->Name = "waterGeo";
 
-	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
-	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+	// Set dynamically.
+	geo->VertexBufferCPU = nullptr;
+	geo->VertexBufferGPU = nullptr;
 
 	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
 	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
-
-	geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
 
 	geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
 		mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
 
 	geo->VertexByteStride = sizeof(Vertex);
 	geo->VertexBufferByteSize = vbByteSize;
-	geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+	geo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	geo->IndexBufferByteSize = ibByteSize;
 
 	SubmeshGeometry submesh;
@@ -1054,11 +1049,45 @@ void ShapesApp::BuildSkullGeometry()
 	submesh.StartIndexLocation = 0;
 	submesh.BaseVertexLocation = 0;
 
-	geo->DrawArgs["skull"] = submesh;
+	geo->DrawArgs["grid"] = submesh;
 
-	mGeometries[geo->Name] = std::move(geo);
+	mGeometries["waterGeo"] = std::move(geo);
 }
 
+void ShapesApp::UpdateWaves(const GameTimer& gt)
+{
+	// Every quarter second, generate a random wave.
+	static float t_base = 0.0f;
+	if((mTimer.TotalTime() - t_base) >= 0.25f)
+	{
+		t_base += 0.25f;
+
+		int i = MathHelper::Rand(4, mWaves->RowCount() - 5);
+		int j = MathHelper::Rand(4, mWaves->ColumnCount() - 5);
+
+		float r = MathHelper::RandF(0.2f, 0.5f);
+
+		mWaves->Disturb(i, j, r);
+	}
+
+	// Update the wave simulation.
+	mWaves->Update(gt.DeltaTime());
+
+	// Update the wave vertex buffer with the new solution.
+	auto currWavesVB = mCurrFrameResource->WavesVB.get();
+	for(int i = 0; i < mWaves->VertexCount(); ++i)
+	{
+		Vertex v;
+
+		v.Pos = mWaves->Position(i);
+		v.Normal = mWaves->Normal(i);
+
+		currWavesVB->CopyData(i, v);
+	}
+
+	// Set the dynamic VB of the wave renderitem to the current frame VB.
+	mWavesRitem->Geo->VertexBufferGPU = currWavesVB->Resource();
+}
 
 //step3
 void ShapesApp::BuildTreeSpritesGeometry()
@@ -1207,10 +1236,9 @@ void ShapesApp::BuildFrameResources()
 	for (int i = 0; i < gNumFrameResources; ++i)
 	{
 		mFrameResources.push_back(std::make_unique<FrameResource>(md3dDevice.Get(),
-			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size()));
+			1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), mWaves->VertexCount()));
 	}
 }
-
 
 void ShapesApp::BuildMaterials()
 {
@@ -1255,6 +1283,15 @@ void ShapesApp::BuildMaterials()
 	treeSprites->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
 	treeSprites->Roughness = 0.125f;
 
+	auto water = std::make_unique<Material>();
+	water->Name = "water";
+	water->MatCBIndex = 5;
+	water->DiffuseSrvHeapIndex = 5;
+    water->DiffuseAlbedo = XMFLOAT4(0.0f, 0.2f, 0.6f, 1.0f);
+    water->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+    water->Roughness = 0.0f;
+
+	mMaterials["water"] = std::move(water);
 	mMaterials["bricks0"] = std::move(bricks0);
 	mMaterials["stone0"] = std::move(stone0);
 	mMaterials["tile0"] = std::move(tile0);
@@ -1314,6 +1351,20 @@ void ShapesApp::BuildRenderItems()
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(boxRitem3.get());
 	mAllRitems.push_back(std::move(boxRitem3));
 
+	auto wavesRitem = std::make_unique<RenderItem>();
+	wavesRitem->World = MathHelper::Identity4x4();
+	wavesRitem->ObjCBIndex = 0;
+	wavesRitem->Mat = mMaterials["water"].get();
+	wavesRitem->Geo = mGeometries["waterGeo"].get();
+	wavesRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	wavesRitem->IndexCount = wavesRitem->Geo->DrawArgs["grid"].IndexCount;
+	wavesRitem->StartIndexLocation = wavesRitem->Geo->DrawArgs["grid"].StartIndexLocation;
+	wavesRitem->BaseVertexLocation = wavesRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
+
+	mWavesRitem = wavesRitem.get();
+
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(wavesRitem.get());
+	mAllRitems.push_back(std::move(wavesRitem));
 
 	//auto cylinderRitem = std::make_unique<RenderItem>();
 	//XMStoreFloat4x4(&cylinderRitem->World, XMMatrixScaling(0.5f, 1.0, 0.5f) * XMMatrixTranslation(0.0f, 4.5f, 0.0f));
@@ -1507,12 +1558,13 @@ void ShapesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::v
 
 	// For each render item...
 	for (size_t i = 0; i < ritems.size(); ++i)
-	//for (size_t i = 0; i < 141; ++i)
 	{
 		auto ri = ritems[i];
 
-		cmdList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
-		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+		auto vb = ri->Geo->VertexBufferView();
+		cmdList->IASetVertexBuffers(0, 1, &vb);
+		auto ib = ri->Geo->IndexBufferView();
+		cmdList->IASetIndexBuffer(&ib);
 		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
 
 		//step18
