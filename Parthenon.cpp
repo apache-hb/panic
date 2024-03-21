@@ -7,6 +7,8 @@
 
 #include "Waves.h"
 
+#include "Common/OBJ_Loader.h"
+
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx12.h"
@@ -100,6 +102,7 @@ private:
 	void BuildShadersAndInputLayout();
 	void BuildWavesGeometryBuffers();
 	void BuildShapeGeometry();
+	void BuildGroundGeometry();
 
 	//step1
 	void BuildTreeSpritesGeometry();
@@ -248,9 +251,8 @@ bool ShapesApp::Initialize()
 	BuildShadersAndInputLayout();
 	BuildShapeGeometry();
 	BuildWavesGeometryBuffers();
-
-	//step2
 	BuildTreeSpritesGeometry();
+	BuildGroundGeometry();
 
 	BuildMaterials();
 	BuildRenderItems();
@@ -619,6 +621,13 @@ void ShapesApp::LoadTextures()
 		mCommandList.Get(), whiteTex->Filename.c_str(),
 		whiteTex->Resource, whiteTex->UploadHeap));
 
+	auto grassTex = std::make_unique<Texture>();
+	grassTex->Name = "grassTex";
+	grassTex->Filename = gProgramPath / L"grass.dds";
+	ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),
+		mCommandList.Get(), grassTex->Filename.c_str(),
+		grassTex->Resource, grassTex->UploadHeap));
+
 	mTextures[treeArrayTex->Name] = std::move(treeArrayTex);
 
 	mTextures[skullTex->Name] = std::move(skullTex);
@@ -628,6 +637,7 @@ void ShapesApp::LoadTextures()
 	mTextures[tileTex->Name] = std::move(tileTex);
 	mTextures[waterTex->Name] = std::move(waterTex);
 	mTextures[whiteTex->Name] = std::move(whiteTex);
+	mTextures[grassTex->Name] = std::move(grassTex);
 }
 
 
@@ -714,6 +724,7 @@ void ShapesApp::BuildDescriptorHeaps()
 	auto whiteTex = mTextures["white1x1"]->Resource;
 
 	auto waterTex = mTextures["waterTex"]->Resource;
+	auto grassTex = mTextures["grassTex"]->Resource;
 	//step11
 	auto treeArrayTex = mTextures["treeArrayTex"]->Resource;
 
@@ -777,7 +788,14 @@ void ShapesApp::BuildDescriptorHeaps()
 	srvDesc.Texture2D.MipLevels = whiteTex->GetDesc().MipLevels;
 	md3dDevice->CreateShaderResourceView(whiteTex.Get(), &srvDesc, hDescriptor);
 
-	UINT offset = mCbvSrvDescriptorSize * 6;
+	// next descriptor
+	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+
+	srvDesc.Format = grassTex->GetDesc().Format;
+	srvDesc.Texture2D.MipLevels = grassTex->GetDesc().MipLevels;
+	md3dDevice->CreateShaderResourceView(grassTex.Get(), &srvDesc, hDescriptor);
+
+	UINT offset = mCbvSrvDescriptorSize * 7;
 
 	hDescriptor.Offset(1, mCbvSrvDescriptorSize);
 
@@ -1344,6 +1362,14 @@ void ShapesApp::BuildMaterials()
     gold->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     gold->Roughness = 0.0f;
 
+	auto grass = std::make_unique<Material>();
+	grass->Name = "grass";
+	grass->MatCBIndex = 7;
+	grass->DiffuseSrvHeapIndex = 7;
+	grass->DiffuseAlbedo = XMFLOAT4(Colors::Green);
+	grass->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
+	grass->Roughness = 0.125f;
+
 	mMaterials["water"] = std::move(water);
 	mMaterials["bricks0"] = std::move(bricks0);
 	mMaterials["stone0"] = std::move(stone0);
@@ -1351,6 +1377,7 @@ void ShapesApp::BuildMaterials()
 	mMaterials["skullMat"] = std::move(skullMat);
 	mMaterials["treeSprites"] = std::move(treeSprites);
 	mMaterials["gold"] = std::move(gold);
+	mMaterials["grass"] = std::move(grass);
 }
 
 
@@ -1581,6 +1608,21 @@ void ShapesApp::BuildRenderItems()
 	mAllRitems.push_back(std::move(treeSpritesRitem));
 
 
+	auto skullRitem = std::make_unique<RenderItem>();
+	XMStoreFloat4x4(&skullRitem->World, XMMatrixScaling(6.f, 1.5f, 8.f) * XMMatrixTranslation(-3.0f, -0.5f, 4.0f));
+	skullRitem->TexTransform = MathHelper::Identity4x4();
+	skullRitem->ObjCBIndex = 2;
+	skullRitem->Mat = mMaterials["grass"].get();
+	skullRitem->Geo = mGeometries["skullGeo"].get();
+	skullRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+	skullRitem->IndexCount = skullRitem->Geo->DrawArgs["skull"].IndexCount;
+	skullRitem->StartIndexLocation = skullRitem->Geo->DrawArgs["skull"].StartIndexLocation;
+	skullRitem->BaseVertexLocation = skullRitem->Geo->DrawArgs["skull"].BaseVertexLocation;
+
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(skullRitem.get());
+
+	mAllRitems.push_back(std::move(skullRitem));
+
 	/*
 	Step9
 	auto gridRitem = std::make_unique<RenderItem>();
@@ -1649,6 +1691,80 @@ void ShapesApp::BuildRenderItems()
 	// step19
 	//for (auto& e : mAllRitems)
 	//	mOpaqueRitems.push_back(e.get());
+}
+
+void ShapesApp::BuildGroundGeometry()
+{
+	objl::Loader Loader;
+
+	bool group = Loader.LoadFile((gProgramPath / "ground.txt").string());
+	if (!group)
+	{
+		MessageBox(0, L"ground.obj not found", 0, 0);
+		std::abort();
+	}
+
+	std::vector<Vertex> vertices;
+	std::vector<std::uint32_t> indices;
+
+	for (int i = 0; i < Loader.LoadedMeshes.size(); i++)
+	{
+		for (int j = 0; j < Loader.LoadedMeshes[i].Vertices.size(); j++)
+		{
+			const auto& v = Loader.LoadedMeshes[i].Vertices[j];
+			Vertex vertex;
+			XMFLOAT3 pos = { v.Position.X, v.Position.Y, v.Position.Z };
+			XMFLOAT3 norm = { v.Normal.X, v.Normal.Y, v.Normal.Z };
+			XMFLOAT2 texC = { v.TextureCoordinate.X, v.TextureCoordinate.Y };
+			vertex.Pos = pos;
+			vertex.Normal = norm;
+			vertex.TexC = texC;
+
+			vertices.push_back(vertex);
+		}
+
+		for (int j = 0; j < Loader.LoadedMeshes[i].Indices.size(); j++)
+		{
+			indices.push_back(Loader.LoadedMeshes[i].Indices[j]);
+		}
+	}
+
+	//
+	// Pack the indices of all the meshes into one index buffer.
+	//
+
+	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+
+	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint32_t);
+
+	auto geo = std::make_unique<MeshGeometry>();
+	geo->Name = "skullGeo";
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+	CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+	CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+	geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
+
+	geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
+
+	geo->VertexByteStride = sizeof(Vertex);
+	geo->VertexBufferByteSize = vbByteSize;
+	geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+	geo->IndexBufferByteSize = ibByteSize;
+
+	SubmeshGeometry submesh;
+	submesh.IndexCount = (UINT)indices.size();
+	submesh.StartIndexLocation = 0;
+	submesh.BaseVertexLocation = 0;
+
+	geo->DrawArgs["skull"] = submesh;
+
+	mGeometries[geo->Name] = std::move(geo);
 }
 
 void ShapesApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)

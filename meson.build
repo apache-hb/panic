@@ -11,6 +11,7 @@ subdir('vendor/imgui')
 fs = import('fs')
 
 src = [
+    fs.copyfile('Models/ground.txt'),
     fs.copyfile('Shaders/Default.hlsl'),
     fs.copyfile('Shaders/LightingUtil.hlsl'),
     fs.copyfile('Shaders/TreeSprite.hlsl'),
